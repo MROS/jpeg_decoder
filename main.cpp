@@ -33,22 +33,68 @@ struct acCode {
 
 typedef int BLOCK[8][8];
 
+int quantTable[4][128];
+
 class MCU {
 public:
     BLOCK mcu[4][2][2];
-//    BLOCK **mcu[4];
-//    MCU() {
-//        for (int v = 1; v <= 3; v++) {
-//            printf("subvector[%d]: %d %d", v, subVector[v].height, subVector[v].width);
-//            mcu[v] = (BLOCK**)malloc(sizeof(BLOCK**) * subVector[v].height);
-//            for (int i = 0; i < subVector[v].height; i++) {
-//                mcu[v][i] = (BLOCK*)malloc(sizeof(BLOCK*) * subVector[v].width);
-//            }
-//        }
-//    }
+    void show() {
+        for (int id = 1; id <= 3; id++) {
+            for (int h = 0; h < subVector[id].height; h++) {
+                for (int w = 0; w < subVector[id].width; w++) {
+                    printf("mcu id: %d, %d %d\n", id, h, w);
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            printf("%4d ", mcu[id][h][w][i][j]);
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+        }
+    };
+    void quantify() {
+        for (int id = 1; id <= 3; id++) {
+            for (int h = 0; h < subVector[id].height; h++) {
+                for (int w = 0; w < subVector[id].width; w++) {
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            mcu[id][h][w][i][j] *= quantTable[subVector[id].quant][i*8 + j];
+                        }
+                    }
+                }
+            }
+        }
+    };
+    void zigzag() {
+        for (int id = 1; id <= 3; id++) {
+            for (int h = 0; h < subVector[id].height; h++) {
+                for (int w = 0; w < subVector[id].width; w++) {
+                    int zz[8][8] = {
+                            { 0,  1,  5,  6, 14, 15, 27, 28},
+                            { 2,  4,  7, 13, 16, 26, 29, 42},
+                            { 3,  8, 12, 17, 25, 30, 41, 43},
+                            { 9, 11, 18, 24, 31, 40, 44, 53},
+                            {10, 19, 23, 32, 39, 45, 52, 54},
+                            {20, 22, 33, 38, 46, 51, 55, 60},
+                            {21, 34, 37, 47, 50, 56, 59, 61},
+                            {35, 36, 48, 49, 57, 58, 62, 63}
+                    };
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            zz[i][j] = mcu[id][h][w][zz[i][j] / 8][zz[i][j] % 8];
+                        }
+                    }
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            mcu[id][h][w][i][j] = zz[i][j];
+                        }
+                    }
+                }
+            }
+        }
+    }
 };
-
-unsigned char quantTable[4][128];
 
 const int DC = 0;
 const int AC = 1;
@@ -101,7 +147,12 @@ void readDQT(FILE *f) {
     printf("精度：%d\n", precision);
     unsigned char id = c & 0x0F;
     printf("量化表ID: %d\n", id);
-    fread(quantTable[id], (precision / 8), 64, f);
+//    fread(quantTable[id], (precision / 8), 64, f);
+    for (int i = 0; i < 64; i++) {
+        char t;
+        fread(&t, 1, 1, f);
+        quantTable[id][i] = t;
+    }
     for (int i = 0; i < 64; i++) {
         if (i % 8 == 0) {
             printf("\n");
@@ -257,15 +308,14 @@ acCode readAC(FILE *f, unsigned char number) {
 }
 
 MCU readMCU(FILE *f) {
+    static int dc[4] = {0, 0, 0, 0};
     auto mcu = MCU();
-    int dc[4] = {0, 0, 0, 0};
     for (int i = 1; i <= 3; i++) {
         for (int h = 0; h < subVector[i].height; h++) {
             for (int w = 0; w < subVector[i].width; w++) {
                 printf("position: %d %d %d\n", i, h, w);
-//                unsigned int thisDC = readDC(f, i/2) + dc[i];
-                unsigned int thisDC = readDC(f, i/2);
-                mcu.mcu[i][h][w][0][0] = thisDC;
+                dc[i] = readDC(f, i/2) + dc[i];
+                mcu.mcu[i][h][w][0][0] = dc[i];
                 unsigned int count = 1;
                 while (count < 64) {
                     acCode ac = readAC(f, i/2);
@@ -296,6 +346,11 @@ MCU readMCU(FILE *f) {
 void readData(FILE *f) {
     printf("************************* test read data **********************************\n");
     MCU mcu = readMCU(f);
+    mcu.quantify();
+    mcu.show();
+    mcu.zigzag();
+    printf("************************* after zigzag **********************************\n");
+    mcu.show();
 }
 
 void readStream(FILE *f) {
