@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <utility>
 #include <map>
+#include <math.h>
 #include "qdbmp.h"
 
 
@@ -12,6 +13,7 @@ const int SOF_MARKER = 0xC0;
 const int DHT_MARKER = 0xC4;
 const int SOS_MARKER = 0xDA;
 const int EOI_MARKER = 0xD9;
+const int COM_MARKER = 0xFE;
 
 struct {
     int height;
@@ -25,27 +27,38 @@ struct {
     unsigned char quant;
 } subVector[4];
 
+unsigned char maxWidth, maxHeight;
+
 struct acCode {
     unsigned char len;
     unsigned char zeros;
     int value;
 };
 
-typedef int BLOCK[8][8];
+struct RGB {
+    unsigned char R, G, B;
+};
+
+typedef double BLOCK[8][8];
 
 int quantTable[4][128];
+
+const int DC = 0;
+const int AC = 1;
+std::map<std::pair<unsigned char, unsigned int>, unsigned char> huffTable[2][2];
 
 class MCU {
 public:
     BLOCK mcu[4][2][2];
     void show() {
+        printf("*************** mcu show ***********************\n");
         for (int id = 1; id <= 3; id++) {
             for (int h = 0; h < subVector[id].height; h++) {
                 for (int w = 0; w < subVector[id].width; w++) {
                     printf("mcu id: %d, %d %d\n", id, h, w);
                     for (int i = 0; i < 8; i++) {
                         for (int j = 0; j < 8; j++) {
-                            printf("%4d ", mcu[id][h][w][i][j]);
+                            printf("%lf ", mcu[id][h][w][i][j]);
                         }
                         printf("\n");
                     }
@@ -93,12 +106,78 @@ public:
                 }
             }
         }
+    };
+    void idct() {
+        for (int id = 1; id <= 3; id++) {
+            for (int h = 0; h < subVector[id].height; h++) {
+                for (int w = 0; w < subVector[id].width; w++) {
+                    double tmp[8][8] = {0};
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            for (int x = 0; x < 8; x++) {
+                                for (int y = 0; y < 8; y++) {
+                                    tmp[i][j] += (c(x, y) * mcu[id][h][w][x][y] * cos((2*i+1)*M_PI/16.0*x) * cos((2*j+1)*M_PI/16.0*y));
+                                }
+                            }
+                            tmp[i][j] /= 4.0;
+                        }
+                    }
+                    for (int i = 0; i < 8; i++) {
+                        for (int j = 0; j < 8; j++) {
+                            mcu[id][h][w][i][j] = tmp[i][j];
+                        }
+                    }
+                }
+            }
+        }
+    }
+    void decode() {
+        this->quantify();
+        this->zigzag();
+        this->idct();
+    }
+    RGB **toRGB() {
+        RGB **ret = (RGB **)malloc(sizeof(RGB **) * maxHeight * 8);
+        for (int i = 0; i < maxHeight * 8; i++) {
+            ret[i] = (RGB *)malloc(sizeof(RGB *) * maxWidth * 8);
+        }
+        for (int i = 0; i < maxHeight * 8; i++) {
+            for (int j = 0; j < maxWidth * 8; j++) {
+                double Y = trans(1, i, j);
+                double Cb = trans(2, i, j);
+                double Cr = trans(3, i, j);
+                ret[i][j].R = chomp(Y + 1.402*Cr + 128);
+                ret[i][j].G = chomp(Y - 0.34414*Cb - 0.71414*Cr + 128);
+                ret[i][j].B = chomp(Y + 1.772*Cb + 128);
+            }
+        }
+        return ret;
+    }
+private:
+    double c(int i, int j) {
+        if (i == 0 && j == 0) {
+            return 1.0/2.0;
+        } else if (i == 0 || j == 0) {
+            return 1.0/sqrt(2.0);
+        } else {
+            return 1.0;
+        }
+    }
+    unsigned char chomp(double x) {
+        if (x > 255.0) {
+            return 255;
+        } else if (x < 0) {
+            return 0;
+        } else {
+            return (unsigned char) x;
+        }
+    }
+    double trans(int id, int h, int w) {
+        int vh = h * subVector[id].height / maxHeight;
+        int vw = w * subVector[id].width / maxWidth;
+        return mcu[id][vh / 8][vw / 8][vh % 8][vw % 8];
     }
 };
-
-const int DC = 0;
-const int AC = 1;
-std::map<std::pair<unsigned char, unsigned int>, unsigned char> huffTable[2][2];
 
 
 void showSectionName(const char *s) {
@@ -112,7 +191,7 @@ unsigned int readSectionLength(FILE *f) {
     fread(&c, 1, 1, f);
     length = c;
     fread(&c, 1, 1, f);
-    length = length * 16 + c;
+    length = length * 256 + c;
     return length;
 }
 
@@ -121,6 +200,16 @@ unsigned int EnterNewSection(FILE *f, const char *s) {
     unsigned int len = readSectionLength(f);
     printf("本區段長度為 %d\n", len);
     return len;
+}
+
+void readCOM(FILE *f) {
+    unsigned int len = EnterNewSection(f, "COM");
+    unsigned char c;
+    for (int i = 0; i < len - 2; i++) {
+        fread(&c, 1, 1, f);
+        printf("%c", c);
+    }
+    printf("\n");
 }
 
 void readAPP(FILE *f) {
@@ -141,25 +230,35 @@ void readAPP(FILE *f) {
 
 void readDQT(FILE *f) {
     unsigned int len = EnterNewSection(f, "DQT");
-    unsigned char c;
-    fread(&c, 1, 1, f);
-    unsigned precision = c >> 4 == 0 ? 8 : 16;
-    printf("精度：%d\n", precision);
-    unsigned char id = c & 0x0F;
-    printf("量化表ID: %d\n", id);
-//    fread(quantTable[id], (precision / 8), 64, f);
-    for (int i = 0; i < 64; i++) {
-        char t;
-        fread(&t, 1, 1, f);
-        quantTable[id][i] = t;
-    }
-    for (int i = 0; i < 64; i++) {
-        if (i % 8 == 0) {
-            printf("\n");
+    len -= 2;
+    while (len > 0) {
+        unsigned char c;
+        fread(&c, 1, 1, f);
+        len--;
+        unsigned precision = c >> 4 == 0 ? 8 : 16;
+        printf("精度：%d\n", precision);
+        precision /= 8;
+        unsigned char id = c & 0x0F;
+        printf("量化表ID: %d\n", id);
+        for (int i = 0; i < 64; i++) {
+            unsigned char t = 0;
+            for (int p = 0; p < precision; p++) {
+                unsigned char s;
+                fread(&s, 1, 1, f);
+                t == t << 8;
+                t += s;
+            }
+            quantTable[id][i] = t;
         }
-        printf("%2d ", quantTable[id][i]);
+        for (int i = 0; i < 64; i++) {
+            if (i % 8 == 0) {
+                printf("\n");
+            }
+            printf("%2d ", quantTable[id][i]);
+        }
+        printf("\n");
+        len -= (precision*64);
     }
-    printf("\n");
 }
 void readSOF(FILE *f) {
     unsigned int len = EnterNewSection(f, "SOF");
@@ -182,6 +281,8 @@ void readSOF(FILE *f) {
         subVector[v[0]].width = v[1] >> 4;
         subVector[v[0]].height = v[1] & 0x0F;
         subVector[v[0]].quant = v[2];
+        maxHeight = (maxHeight > subVector[v[0]].height ? maxHeight : subVector[v[0]].height);
+        maxWidth = (maxWidth > subVector[v[0]].width ? maxWidth : subVector[v[0]].width);
     }
 }
 std::pair<unsigned char, unsigned int>* createHuffCode(unsigned char *a, unsigned int number) {
@@ -200,29 +301,34 @@ std::pair<unsigned char, unsigned int>* createHuffCode(unsigned char *a, unsigne
 }
 void readDHT(FILE *f) {
     unsigned int len = EnterNewSection(f, "DHT");
-    unsigned char v[1];
-    fread(v, 1, 1, f);
-    unsigned char DCorAC = v[0] >> 4;
-    printf(DCorAC == 0 ? "DC\n" : "AC\n");
-    unsigned char id = v[0] & 0x0F;
-    printf("ID: %d\n", id);
+    len -= 2;
+    while (len > 0) {
+        unsigned char v[1];
+        fread(v, 1, 1, f);
+        unsigned char DCorAC = v[0] >> 4;
+        printf(DCorAC == 0 ? "DC\n" : "AC\n");
+        unsigned char id = v[0] & 0x0F;
+        printf("ID: %d\n", id);
 
-    unsigned char a[16];
-    fread(a, 1, 16, f);
-    unsigned int number = 0;
-    for (int i = 0; i < 16; i++) {
-        printf("%d ", a[i]);
-        number += a[i];
+        unsigned char a[16];
+        fread(a, 1, 16, f);
+        unsigned int number = 0;
+        for (int i = 0; i < 16; i++) {
+            printf("%d ", a[i]);
+            number += a[i];
+        }
+        printf("\n");
+        auto huffCode = createHuffCode(a, number);
+        for (int i = 0; i < number; i++) {
+            unsigned char v;
+            fread(&v, 1, 1, f);
+            huffTable[DCorAC][id][huffCode[i]] = v;
+            printf("%d %d: %d\n", huffCode[i].first, huffCode[i].second, v);
+        }
+        free(huffCode);
+
+        len -= (1 + 16 + number);
     }
-    printf("\n");
-    auto huffCode = createHuffCode(a, number);
-    for (int i = 0; i < number; i++) {
-        unsigned char v;
-        fread(&v, 1, 1, f);
-        huffTable[DCorAC][id][huffCode[i]] = v;
-        printf("%d %d: %d\n", huffCode[i].first, huffCode[i].second, v);
-    }
-    free(huffCode);
 }
 void readSOS(FILE *f) {
     unsigned int len = EnterNewSection(f, "SOS");
@@ -240,7 +346,6 @@ void readSOS(FILE *f) {
 }
 
 // 必須連續呼叫getBit，中間被fread斷掉就會出問題
-// ???: 讀到FF後把後面的00也拿掉
 bool getBit(FILE *f) {
     static unsigned char buf;
     static unsigned char count = 0;
@@ -254,7 +359,6 @@ bool getBit(FILE *f) {
             else if (check != 0x00) {fprintf(stderr, "在data段出現不是0xFF00的標記碼"); exit(1);}
             else if (check == 0x00){break;}
         }
-        printf("new byte %d\n", buf);
     }
     bool ret = buf & (1 << (7 - count));
     count = (count == 7 ? 0 : count + 1);
@@ -271,12 +375,14 @@ unsigned char matchHuff(FILE *f, unsigned char number, unsigned char ACorDC) {
             codeLen = huffTable[ACorDC][number][std::make_pair(count, len)];
             return codeLen;
         }
+        if (count > 16) {fprintf(stderr, "key not found\n"); count = 1; len = 0;}
     }
 }
 
 int readDC(FILE *f, unsigned char number) {
     unsigned char codeLen = matchHuff(f, number, DC);
-    unsigned  char first = getBit(f);
+    if (codeLen == 0) { return 0; }
+    unsigned char first = getBit(f);
     int ret = 1;
     for (int i = 1; i < codeLen; i++) {
         unsigned char b = getBit(f);
@@ -284,16 +390,19 @@ int readDC(FILE *f, unsigned char number) {
         ret += first ? b : !b;
     }
     ret = first ? ret : -ret;
-    printf("read DC: len %d, value %d\n", codeLen, ret);
+//    printf("read DC: len %d, value %d\n", codeLen, ret);
     return ret;
 }
 
+// 計算ZRL
 acCode readAC(FILE *f, unsigned char number) {
     unsigned char x = matchHuff(f, number, AC);
     unsigned char zeros = x >> 4;
     unsigned char codeLen = x & 0x0F;
     if (x == 0) {
         return acCode{0,0,0};
+    } else if (x == 0xF0) {
+        return acCode{0, 16, 0};
     }
     unsigned  char first = getBit(f);
     int code = 1;
@@ -303,7 +412,7 @@ acCode readAC(FILE *f, unsigned char number) {
         code += first ? b : !b;
     }
     code = first ? code : -code;
-    printf("read AC: %d %d %d\n", codeLen, zeros, code);
+//    printf("read AC: %d %d %d\n", codeLen, zeros, code);
     return acCode{codeLen, zeros, code};
 }
 
@@ -313,29 +422,30 @@ MCU readMCU(FILE *f) {
     for (int i = 1; i <= 3; i++) {
         for (int h = 0; h < subVector[i].height; h++) {
             for (int w = 0; w < subVector[i].width; w++) {
-                printf("position: %d %d %d\n", i, h, w);
                 dc[i] = readDC(f, i/2) + dc[i];
                 mcu.mcu[i][h][w][0][0] = dc[i];
                 unsigned int count = 1;
                 while (count < 64) {
                     acCode ac = readAC(f, i/2);
-                    if (ac.len == 0) {break;}
-                    for (int j = 0; j < ac.zeros; j++) {
-                        mcu.mcu[i][h][w][count/8][count%8] = 0;
+                    if (ac.len == 0 && ac.zeros == 16) {
+                        for (int j = 0; j < ac.zeros; j++) {
+                            mcu.mcu[i][h][w][count/8][count%8] = 0;
+                            count++;
+                        }
+                    } else if (ac.len == 0) {
+                        break;
+                    } else {
+                        for (int j = 0; j < ac.zeros; j++) {
+                            mcu.mcu[i][h][w][count/8][count%8] = 0;
+                            count++;
+                        }
+                        mcu.mcu[i][h][w][count/8][count%8] = ac.value;
                         count++;
                     }
-                    mcu.mcu[i][h][w][count/8][count%8] = ac.value;
-                    count++;
                 }
                 while (count < 64) {
                     mcu.mcu[i][h][w][count/8][count%8] = 0;
                     count++;
-                }
-                for (int a = 0; a < 8; a++) {
-                    for (int b = 0; b < 8; b++) {
-                        printf("%3d ", mcu.mcu[i][h][w][a][b]);
-                    }
-                    printf("\n");
                 }
             }
         }
@@ -345,12 +455,27 @@ MCU readMCU(FILE *f) {
 
 void readData(FILE *f) {
     printf("************************* test read data **********************************\n");
-    MCU mcu = readMCU(f);
-    mcu.quantify();
-    mcu.show();
-    mcu.zigzag();
-    printf("************************* after zigzag **********************************\n");
-    mcu.show();
+    int w = (image.width - 1) / (8*maxWidth) + 1;
+    int h = (image.height - 1) / (8*maxHeight) + 1;
+    BMP *bmp = BMP_Create(maxWidth * 8 * w, maxHeight * 8 * h, 24);
+    for (int i = 0; i < h; i++) {
+        for (int j = 0; j < w; j++) {
+            MCU mcu = readMCU(f);
+            mcu.quantify();
+            mcu.zigzag();
+            mcu.idct();
+            RGB **b = mcu.toRGB();
+            for (int y = i*8*maxHeight; y < (i+1)*8*maxHeight; y++) {
+                for (int x = j*8*maxWidth; x < (j+1)*8*maxWidth; x++) {
+                    int by = y - i*8*maxHeight;
+                    int bx = x - j*8*maxWidth;
+                    BMP_SetPixelRGB(bmp, x, y, b[by][bx].R, b[by][bx].G, b[by][bx].B);
+                }
+            }
+            BMP_WriteFile(bmp, "out.bmp");
+        }
+    }
+    BMP_WriteFile(bmp, "out.bmp");
 }
 
 void readStream(FILE *f) {
@@ -364,6 +489,9 @@ void readStream(FILE *f) {
                 break;
             case APP0_MARKER:
                 readAPP(f);
+                break;
+            case COM_MARKER:
+                readCOM(f);
                 break;
             case DQT_MARKER:
                 readDQT(f);
