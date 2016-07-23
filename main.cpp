@@ -58,6 +58,7 @@ void init_cos_cache() {
 class MCU {
 public:
     BLOCK mcu[4][2][2];
+    // 除錯用
     void show() {
         printf("*************** mcu show ***********************\n");
         for (int id = 1; id <= 3; id++) {
@@ -215,6 +216,8 @@ private:
 };
 
 
+// 讀取 Section 用之輔助函式
+
 void showSectionName(const char *s) {
     printf("************************ %s **************************\n", s);
     return;
@@ -236,6 +239,8 @@ unsigned int EnterNewSection(FILE *f, const char *s) {
     printf("本區段長度為 %d\n", len);
     return len;
 }
+
+// 讀取各 Section 之函式
 
 void readCOM(FILE *f) {
     unsigned int len = EnterNewSection(f, "COM");
@@ -320,6 +325,7 @@ void readSOF(FILE *f) {
         maxWidth = (maxWidth > subVector[v[0]].width ? maxWidth : subVector[v[0]].width);
     }
 }
+
 std::pair<unsigned char, unsigned int>* createHuffCode(unsigned char *a, unsigned int number) {
     int si = sizeof(std::pair<unsigned char, unsigned int>);
     auto ret = (std::pair<unsigned char, unsigned int>*)malloc(si * number);
@@ -496,9 +502,7 @@ void readData(FILE *f) {
     for (int i = 0; i < h; i++) {
         for (int j = 0; j < w; j++) {
             MCU mcu = readMCU(f);
-            mcu.quantify();
-            mcu.zigzag();
-            mcu.idct();
+            mcu.decode();
             RGB **b = mcu.toRGB();
             for (int y = i*8*maxHeight; y < (i+1)*8*maxHeight; y++) {
                 for (int x = j*8*maxWidth; x < (j+1)*8*maxWidth; x++) {
@@ -522,6 +526,21 @@ void readStream(FILE *f) {
                 printf("Start of Image\n");
                 break;
             case APP0_MARKER:
+            case 0xE1:
+            case 0xE2:
+            case 0xE3:
+            case 0xE4:
+            case 0xE5:
+            case 0xE6:
+            case 0xE7:
+            case 0xE8:
+            case 0xE9:
+            case 0xEA:
+            case 0xEB:
+            case 0xEC:
+            case 0xED:
+            case 0xEE:
+            case 0xEF:
                 readAPP(f);
                 break;
             case COM_MARKER:
@@ -561,7 +580,5 @@ int main(int argc, char *argv[]) {
     }
     init_cos_cache();
     readStream(f);
-
-
     return 0;
 }
