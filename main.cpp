@@ -47,6 +47,14 @@ const int DC = 0;
 const int AC = 1;
 std::map<std::pair<unsigned char, unsigned int>, unsigned char> huffTable[2][2];
 
+double cos_cache[200];
+
+void init_cos_cache() {
+    for (int i = 0; i < 200; i++) {
+        cos_cache[i] = cos(i * M_PI / 16.0);
+    }
+}
+
 class MCU {
 public:
     BLOCK mcu[4][2][2];
@@ -112,14 +120,33 @@ public:
             for (int h = 0; h < subVector[id].height; h++) {
                 for (int w = 0; w < subVector[id].width; w++) {
                     double tmp[8][8] = {0};
+//					 照定義展開，效能低下
+//                     for (int i = 0; i < 8; i++) {
+//                         for (int j = 0; j < 8; j++) {
+//                             for (int x = 0; x < 8; x++) {
+//                                 for (int y = 0; y < 8; y++) {
+//                                     tmp[i][j] += (cc(x, y) * mcu[id][h][w][x][y] * cos((2*i+1)*M_PI/16.0*x) * cos((2*j+1)*M_PI/16.0*y));
+//                                 }
+//                             }
+//                             tmp[i][j] /= 4.0;
+//                         }
+//                     }
+					// 計算兩次一維idct去計算二維idct
+                    double s[8][8] = {};
+                    for (int j = 0; j < 8; j++) {
+                        for (int x = 0; x < 8; x++) {
+                            for (int y = 0; y < 8; y++) {
+                                s[j][x] += c (y) * mcu[id][h][w][x][y] * cos_cache[(j + j + 1) * y];
+                            }
+                            s[j][x] = s[j][x] / 2.0;
+                        }
+                    }
                     for (int i = 0; i < 8; i++) {
                         for (int j = 0; j < 8; j++) {
                             for (int x = 0; x < 8; x++) {
-                                for (int y = 0; y < 8; y++) {
-                                    tmp[i][j] += (c(x, y) * mcu[id][h][w][x][y] * cos((2*i+1)*M_PI/16.0*x) * cos((2*j+1)*M_PI/16.0*y));
-                                }
+                                tmp[i][j] += c(x) * s[j][x] * cos_cache[(i + i + 1) * x];
                             }
-                            tmp[i][j] /= 4.0;
+                            tmp[i][j] = tmp[i][j] / 2.0;
                         }
                     }
                     for (int i = 0; i < 8; i++) {
@@ -154,11 +181,19 @@ public:
         return ret;
     }
 private:
-    double c(int i, int j) {
+    double cc(int i, int j) {
         if (i == 0 && j == 0) {
             return 1.0/2.0;
         } else if (i == 0 || j == 0) {
             return 1.0/sqrt(2.0);
+        } else {
+            return 1.0;
+        }
+    }
+    double c(int i) {
+        static double x = 1.0/sqrt(2.0);
+        if (i == 0) {
+            return x;
         } else {
             return 1.0;
         }
@@ -472,7 +507,6 @@ void readData(FILE *f) {
                     BMP_SetPixelRGB(bmp, x, y, b[by][bx].R, b[by][bx].G, b[by][bx].B);
                 }
             }
-            BMP_WriteFile(bmp, "out.bmp");
         }
     }
     BMP_WriteFile(bmp, "out.bmp");
@@ -525,6 +559,7 @@ int main(int argc, char *argv[]) {
     if (f == NULL) {
         fprintf(stderr, "檔案開啟失敗\n");
     }
+    init_cos_cache();
     readStream(f);
 
 
