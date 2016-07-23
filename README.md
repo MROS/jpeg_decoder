@@ -2,6 +2,9 @@
 
 將 jpg 檔轉換為 bmp 檔
 
+本專案大量參考 [enmasse/jpeg_read](https://github.com/enmasse/jpeg_read)
+及[JPEG文件编/解码详解](http://blog.csdn.net/lpt19832003/article/details/1713718)
+
 ## 編譯
 
 ``` sh
