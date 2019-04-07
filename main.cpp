@@ -392,13 +392,12 @@ bool getBit(FILE *f) {
     static unsigned char count = 0;
     if (count == 0) {
         fread(&buf, 1, 1, f);
-        while (buf == 0xFF) {
+        if (buf == 0xFF) {
             unsigned char check;
             fread(&check, 1, 1, f);
-            if (check == EOI_MARKER) {printf("讀到EOI_MARKER，程式結束"); exit(0);}
-            else if (check == 0xFF) {fprintf(stderr, "在data段出現不是0xFF00的標記碼"); continue;}
-            else if (check != 0x00) {fprintf(stderr, "在data段出現不是0xFF00的標記碼"); exit(1);}
-            else if (check == 0x00){break;}
+            if (check != 0x00) {
+                fprintf(stderr, "data 段有不是 0xFF00 的數據");
+            }
         }
     }
     bool ret = buf & (1 << (7 - count));
