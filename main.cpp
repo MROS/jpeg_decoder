@@ -305,7 +305,6 @@ void readSOF(FILE *f) {
     fseek(f, 1, SEEK_CUR); // 精度
     unsigned char v[3];
     fread(v, 1, 2, f);
-    // TODO: 高度跟寬度不確定
     image.height = v[0] * 256 + v[1];
     fread(v, 1, 2, f);
     image.width = v[0] * 256 + v[1];
